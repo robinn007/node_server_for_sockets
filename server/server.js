@@ -396,6 +396,81 @@ io.on("connection", (socket) => {
     }
   });
 
+  // === WebRTC Video Call Signaling ===
+  socket.on("video_call_offer", async (data) => {
+    const { caller_email, receiver_email, offer, caller_name } = data;
+    console.log(`Video call offer from ${caller_email} to ${receiver_email}`);
+
+    if (userConnBucket[receiver_email]) {
+      for (const socketId of userConnBucket[receiver_email]) {
+        io.to(socketId).emit("video_call_incoming", {
+          caller_email,
+          caller_name,
+          offer,
+        });
+      }
+      console.log(`Video call offer sent to ${receiver_email}`);
+    } else {
+      socket.emit("video_call_failed", {
+        message: "User is offline",
+      });
+    }
+  });
+
+  socket.on("video_call_answer", (data) => {
+    const { caller_email, answerer_email, answer } = data;
+    console.log(`Video call answer from ${answerer_email} to ${caller_email}`);
+
+    if (userConnBucket[caller_email]) {
+      for (const socketId of userConnBucket[caller_email]) {
+        io.to(socketId).emit("video_call_answered", {
+          answerer_email,
+          answer,
+        });
+      }
+    }
+  });
+
+  socket.on("ice_candidate", (data) => {
+    const { sender_email, receiver_email, candidate } = data;
+    console.log(`ICE candidate from ${sender_email} to ${receiver_email}`);
+
+    if (userConnBucket[receiver_email]) {
+      for (const socketId of userConnBucket[receiver_email]) {
+        io.to(socketId).emit("ice_candidate", {
+          sender_email,
+          candidate,
+        });
+      }
+    }
+  });
+
+  socket.on("video_call_rejected", (data) => {
+    const { caller_email, receiver_email } = data;
+    console.log(`Video call rejected by ${receiver_email}`);
+
+    if (userConnBucket[caller_email]) {
+      for (const socketId of userConnBucket[caller_email]) {
+        io.to(socketId).emit("video_call_rejected", {
+          receiver_email,
+        });
+      }
+    }
+  });
+
+  socket.on("video_call_ended", (data) => {
+    const { sender_email, receiver_email } = data;
+    console.log(`Video call ended by ${sender_email}`);
+
+    if (userConnBucket[receiver_email]) {
+      for (const socketId of userConnBucket[receiver_email]) {
+        io.to(socketId).emit("video_call_ended", {
+          sender_email,
+        });
+      }
+    }
+  });
+
   // Join group
   socket.on("join_group", async ({ email, group_id }) => {
     const [memberCheck] = await pool.execute(
@@ -457,5 +532,7 @@ io.on("connection", (socket) => {
 const PORT = 3000;
 server.listen(PORT, () => {
   console.log(`Socket.IO server running on http://localhost:${PORT}`);
-  console.log("Group chat, typing indicators, and file messages enabled");
+  console.log(
+    "Group chat, typing indicators, file messages, and video call signaling enabled"
+  );
 });
