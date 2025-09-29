@@ -95,7 +95,7 @@ setInterval(() => {
 
 // === API ENDPOINTS ===
 
-// Group creation (from PHP backend)
+// Group creation
 app.post("/emit_group_created", async (req, res) => {
   const { group_id, name, description, created_by, members, member_count } =
     req.body;
@@ -141,7 +141,7 @@ app.post("/emit_group_created", async (req, res) => {
   }
 });
 
-// File message (from PHP backend)
+// File message
 app.post("/emit_file_message", async (req, res) => {
   const {
     id,
@@ -396,50 +396,110 @@ io.on("connection", (socket) => {
     }
   });
 
-  // === WebRTC Video Call Signaling ===
-  socket.on("video_call_offer", async (data) => {
-    const { caller_email, receiver_email, offer, caller_name } = data;
-    console.log(`Video call offer from ${caller_email} to ${receiver_email}`);
+  // === GROUP VIDEO CALL EVENTS ===
+  socket.on("group_video_call_start", async (data) => {
+    const { caller_email, caller_name, group_id, members } = data;
+    console.log(`Group video call started by ${caller_email} in group ${group_id}`);
+    
+    try {
+      const [memberCheck] = await pool.execute(
+        "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1",
+        [group_id, caller_email]
+      );
+      
+      if (memberCheck.length > 0) {
+        const roomName = `group_${group_id}`;
+        socket.to(roomName).emit("group_video_call_incoming", {
+          caller_email,
+          caller_name,
+          group_id,
+          members
+        });
+        console.log(`Group video call notification sent to room: ${roomName}`);
+      }
+    } catch (err) {
+      console.error("Error starting group video call:", err);
+    }
+  });
 
+  socket.on("group_video_call_joined", async (data) => {
+    const { joiner_email, joiner_name, group_id } = data;
+    console.log(`${joiner_email} joined group video call in group ${group_id}`);
+    
+    try {
+      const roomName = `group_${group_id}`;
+      socket.to(roomName).emit("group_video_call_peer_joined", {
+        joiner_email,
+        joiner_name,
+        group_id
+      });
+    } catch (err) {
+      console.error("Error handling group video call join:", err);
+    }
+  });
+
+  socket.on("group_video_call_left", async (data) => {
+    const { leaver_email, group_id } = data;
+    console.log(`${leaver_email} left group video call in group ${group_id}`);
+    
+    try {
+      const roomName = `group_${group_id}`;
+      socket.to(roomName).emit("group_video_call_peer_left", {
+        leaver_email,
+        group_id
+      });
+    } catch (err) {
+      console.error("Error handling group video call leave:", err);
+    }
+  });
+
+  // === ONE-TO-ONE & GROUP CALL SIGNALING ===
+  socket.on("video_call_offer", async (data) => {
+    const { caller_email, receiver_email, offer, caller_name, group_id } = data;
+    console.log(`Video call offer from ${caller_email} to ${receiver_email}${group_id ? ' (group call)' : ''}`);
+    
     if (userConnBucket[receiver_email]) {
       for (const socketId of userConnBucket[receiver_email]) {
         io.to(socketId).emit("video_call_incoming", {
           caller_email,
           caller_name,
           offer,
+          group_id: group_id || null
         });
       }
       console.log(`Video call offer sent to ${receiver_email}`);
     } else {
       socket.emit("video_call_failed", {
-        message: "User is offline",
+        message: "User is offline"
       });
     }
   });
 
   socket.on("video_call_answer", (data) => {
-    const { caller_email, answerer_email, answer } = data;
-    console.log(`Video call answer from ${answerer_email} to ${caller_email}`);
-
+    const { caller_email, answerer_email, answer, group_id } = data;
+    console.log(`Video call answer from ${answerer_email} to ${caller_email}${group_id ? ' (group call)' : ''}`);
+    
     if (userConnBucket[caller_email]) {
       for (const socketId of userConnBucket[caller_email]) {
         io.to(socketId).emit("video_call_answered", {
           answerer_email,
           answer,
+          group_id: group_id || null
         });
       }
     }
   });
 
   socket.on("ice_candidate", (data) => {
-    const { sender_email, receiver_email, candidate } = data;
+    const { sender_email, receiver_email, candidate, group_id } = data;
     console.log(`ICE candidate from ${sender_email} to ${receiver_email}`);
-
+    
     if (userConnBucket[receiver_email]) {
       for (const socketId of userConnBucket[receiver_email]) {
         io.to(socketId).emit("ice_candidate", {
           sender_email,
           candidate,
+          group_id: group_id || null
         });
       }
     }
