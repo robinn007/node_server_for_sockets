@@ -70,7 +70,7 @@ async function markOffline(email) {
 async function getGroupMembers(groupId) {
   try {
     const [rows] = await pool.execute(
-      "SELECT email FROM group_members WHERE group_id = ? AND is_active = 1", // CHANGED: member_email -> email (also in SELECT)
+      "SELECT email FROM group_members WHERE group_id = ? AND is_active = 1",
       [groupId]
     );
     return rows.map((row) => row.email);
@@ -189,7 +189,7 @@ io.on("connection", (socket) => {
 
         // Join user to their group rooms
         const [groups] = await pool.execute(
-          "SELECT group_id FROM group_members WHERE email = ? AND is_active = 1", // CHANGED: member_email -> email
+          "SELECT group_id FROM group_members WHERE email = ? AND is_active = 1",
           [email]
         );
 
@@ -280,7 +280,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Direct chat message (existing functionality)
+  // Direct chat message
   socket.on("chat_message", async (data) => {
     const { sender_email, receiver_email, message } = data;
     console.log(
@@ -310,7 +310,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Group chat message (new functionality)
+  // Group chat message
   socket.on("group_message", async (data) => {
     const { sender_email, group_id, message } = data;
     console.log(
@@ -320,7 +320,7 @@ io.on("connection", (socket) => {
     try {
       // Verify user is a member of the group
       const [memberCheck] = await pool.execute(
-        "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1", // CHANGED: member_email -> email
+        "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1",
         [group_id, sender_email]
       );
 
@@ -371,15 +371,117 @@ io.on("connection", (socket) => {
     }
   });
 
+  // === Typing Start ===
+  socket.on("typing_start", async (data) => {
+    const { sender_email, receiver_email, group_id, type } = data;
+
+    if (type === "group" && group_id) {
+      console.log(`${sender_email} started typing in group ${group_id}`);
+
+      try {
+        const [memberCheck] = await pool.execute(
+          "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1",
+          [group_id, sender_email]
+        );
+
+        if (memberCheck.length > 0) {
+          const senderName = await getSenderName(sender_email);
+          const roomName = `group_${group_id}`;
+
+          socket.to(roomName).emit("typing_start", {
+            sender_email,
+            sender_name: senderName,
+            group_id: parseInt(group_id),
+            type: "group",
+          });
+
+          console.log(`Broadcasted typing_start to group ${group_id}`);
+        }
+      } catch (err) {
+        console.error("Error handling group typing_start:", err);
+      }
+    } else if (type === "direct" && receiver_email) {
+      console.log(`${sender_email} started typing to ${receiver_email}`);
+
+      try {
+        if (userConnBucket[receiver_email] && userConnBucket[receiver_email].length > 0) {
+          const senderName = await getSenderName(sender_email);
+
+          for (const socketId of userConnBucket[receiver_email]) {
+            io.to(socketId).emit("typing_start", {
+              sender_email,
+              sender_name: senderName,
+              receiver_email,
+              type: "direct",
+            });
+          }
+
+          console.log(`Sent typing_start to ${receiver_email}`);
+        } else {
+          console.log(`${receiver_email} is offline, skipping typing indicator`);
+        }
+      } catch (err) {
+        console.error("Error handling direct typing_start:", err);
+      }
+    }
+  });
+
+  // === Typing Stop ===
+  socket.on("typing_stop", async (data) => {
+    const { sender_email, receiver_email, group_id, type } = data;
+
+    if (type === "group" && group_id) {
+      console.log(`${sender_email} stopped typing in group ${group_id}`);
+
+      try {
+        const [memberCheck] = await pool.execute(
+          "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1",
+          [group_id, sender_email]
+        );
+
+        if (memberCheck.length > 0) {
+          const roomName = `group_${group_id}`;
+
+          socket.to(roomName).emit("typing_stop", {
+            sender_email,
+            group_id: parseInt(group_id),
+            type: "group",
+          });
+
+          console.log(`Broadcasted typing_stop to group ${group_id}`);
+        }
+      } catch (err) {
+        console.error("Error handling group typing_stop:", err);
+      }
+    } else if (type === "direct" && receiver_email) {
+      console.log(`${sender_email} stopped typing to ${receiver_email}`);
+
+      try {
+        if (userConnBucket[receiver_email] && userConnBucket[receiver_email].length > 0) {
+          for (const socketId of userConnBucket[receiver_email]) {
+            io.to(socketId).emit("typing_stop", {
+              sender_email,
+              receiver_email,
+              type: "direct",
+            });
+          }
+
+          console.log(`Sent typing_stop to ${receiver_email}`);
+        }
+      } catch (err) {
+        console.error("Error handling direct typing_stop:", err);
+      }
+    }
+  });
+
   // Join group room
   socket.on("join_group", async (data) => {
     const { email, group_id } = data;
     console.log(`${email} requesting to join group ${group_id}`);
 
     try {
-      // Verify user is a member of the group
       const [memberCheck] = await pool.execute(
-        "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1", // CHANGED: member_email -> email
+        "SELECT 1 FROM group_members WHERE group_id = ? AND email = ? AND is_active = 1",
         [group_id, email]
       );
 
@@ -388,7 +490,6 @@ io.on("connection", (socket) => {
         socket.join(roomName);
         console.log(`${email} joined group room: ${roomName}`);
 
-        // Track group room members
         if (!groupRooms[group_id]) {
           groupRooms[group_id] = [];
         }
@@ -410,7 +511,6 @@ io.on("connection", (socket) => {
     socket.leave(roomName);
     console.log(`Socket ${socket.id} left group room: ${roomName}`);
 
-    // Remove from group room tracking
     if (groupRooms[group_id]) {
       groupRooms[group_id] = groupRooms[group_id].filter(
         (id) => id !== socket.id
@@ -427,24 +527,21 @@ io.on("connection", (socket) => {
     const email = connections[socket.id];
 
     if (email) {
-      // Remove socket from bucket
       if (userConnBucket[email]) {
         userConnBucket[email] = userConnBucket[email].filter(
           (id) => id !== socket.id
         );
         if (userConnBucket[email].length === 0) {
-          // Delay marking offline to allow for quick reconnects
           setTimeout(() => {
             if (userConnBucket[email]?.length === 0) {
               markOffline(email);
               delete lastActivity[email];
               delete userConnBucket[email];
             }
-          }, 10000); // 10-second grace period
+          }, 10000); // 10s grace period
         }
       }
 
-      // Remove from group rooms
       for (const groupId in groupRooms) {
         groupRooms[groupId] = groupRooms[groupId].filter(
           (id) => id !== socket.id
@@ -463,5 +560,5 @@ io.on("connection", (socket) => {
 const PORT = 3000;
 server.listen(PORT, () => {
   console.log(`Socket.IO server running on http://localhost:${PORT}`);
-  console.log("Group chat functionality enabled");
+  console.log("Group chat functionality enabled (with typing indicators)");
 });
